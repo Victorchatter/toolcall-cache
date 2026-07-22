@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 360" width="720" height="360">
+  <rect width="100%" height="100%" fill="#f8fafc"/>
+  <text x="360.0" y="36" text-anchor="middle" font-size="18" font-weight="700" fill="#0f172a">Repeated read_file(path) calls in a long session</text>
+  <line x1="100" y1="280" x2="452" y2="280" stroke="#94a3b8" stroke-width="2"/>
+  <rect x="100" y="60" width="64" height="220" rx="6" fill="#ef4444"/><rect x="244" y="236.0" width="64" height="44.0" rx="6" fill="#f59e0b"/><rect x="388" y="104.0" width="64" height="176.0" rx="6" fill="#10b981"/>
+  <text x="132.0" y="300" text-anchor="middle" font-size="13" fill="#334155">Without cache</text><text x="132.0" y="50" text-anchor="middle" font-size="13" font-weight="600" fill="#334155">5 upstream calls</text><text x="276.0" y="300" text-anchor="middle" font-size="13" fill="#334155">With cache (upstream)</text><text x="276.0" y="226.0" text-anchor="middle" font-size="13" font-weight="600" fill="#334155">1 upstream call</text><text x="420.0" y="300" text-anchor="middle" font-size="13" fill="#334155">With cache (hits)</text><text x="420.0" y="94.0" text-anchor="middle" font-size="13" font-weight="600" fill="#334155">4 cache hits</text>
+</svg>
