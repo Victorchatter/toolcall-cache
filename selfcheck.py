@@ -110,7 +110,43 @@ def _recv(proc):
     return json.loads(line.decode("utf-8"))
 
 
+def test_ttl():
+    """Unit-check TTL expiry against the cache module directly.
+
+    cache.get / cache.put accept an injectable ``now`` so expiry can be
+    exercised without sleeping: a hit before expiry returns the result; a read
+    after expiry returns None (a miss), so the next call re-fetches upstream.
+    """
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+    sys.path.insert(0, src_path)
+    from toolcall_cache.cache import get, init_db, put  # noqa: E402
+    from toolcall_cache.key import make_args_hash, make_key  # noqa: E402
+
+    db_path = tempfile.mktemp(suffix=".db")
+    conn = init_db(db_path)
+    try:
+        key = make_key("s", "read_file", {"path": "/t"})
+        ah = make_args_hash({"path": "/t"})
+        result = {"content": [{"type": "text", "text": "content of /t"}]}
+        ttl = 60.0
+
+        put(conn, key, "s", "read_file", ah, result, ttl, now=100.0)
+        _assert(get(conn, key, now=100.0) is not None, "entry should hit before expiry")
+        _assert(get(conn, key, now=159.0) is not None, "entry should hit at the boundary (now <= expires_at)")
+        _assert(get(conn, key, now=160.1) is None, "entry should miss after expiry")
+        _assert(get(conn, key, now=200.0) is None, "entry should stay missing after expiry")
+    finally:
+        conn.close()
+        for ext in ("", "-journal", "-wal", "-shm"):
+            try:
+                os.remove(db_path + ext)
+            except OSError:
+                pass
+
+
 def main():
+    test_ttl()
+
     project_root = os.path.dirname(os.path.abspath(__file__))
     src_path = os.path.join(project_root, "src")
 

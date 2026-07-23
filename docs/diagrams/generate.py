@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 
@@ -11,6 +12,22 @@ def _save(name: str, svg: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write(svg)
     print(f"wrote {path}")
+
+
+def _load_results() -> dict:
+    """Load measured benchmark results from benchmarks/results.json.
+
+    Falls back to an empty dict (callers use illustrative defaults) when the
+    file is absent, so the diagrams still render before the benchmark has been
+    run. Run `python benchmarks/bench_latency.py` to (re)generate results.json.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, "..", "..", "benchmarks", "results.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 def cache_impact_svg() -> str:
@@ -56,20 +73,35 @@ def cache_impact_svg() -> str:
 
 
 def latency_svg() -> str:
-    """Latency comparison for cached vs upstream."""
+    """Latency comparison for cached vs upstream.
+
+    The cache bar uses the MEASURED per-call cache-hit latency from
+    benchmarks/results.json (run `python benchmarks/bench_latency.py` to
+    regenerate). The upstream bar is a TYPICAL network-tool round-trip, not
+    measured here — a real upstream's cost varies wildly by tool, so we label
+    it as typical and let the README spell out the assumptions. Both totals
+    scale to `repeated_calls` (default 10) repeated identical calls.
+    """
+    r = _load_results()
     width = 720
     height = 300
     margin_top = 60
     y_base = 240
+    repeated = r.get("repeated_calls", 10)
+    # Measured cache-hit per call through the proxy; fall back to an honest
+    # sub-millisecond default if the benchmark hasn't been run yet.
+    cache_per_call_ms = r.get("cached_call_ms", 0.8)
+    # Illustrative typical upstream (a real network/filesystem tool call).
+    upstream_per_call_ms = 200.0
 
-    # Scenario: 10 repeated calls, upstream ~200ms, cache ~1ms
-    upstream_total = 2000
-    cache_total = 200 + 9 * 1
+    upstream_total = upstream_per_call_ms * repeated
+    # First call misses (upstream + cache fill); the rest are cache hits.
+    cache_total = upstream_per_call_ms + (repeated - 1) * cache_per_call_ms
     scale = 180 / max(upstream_total, cache_total)
 
     bars = [
-        ("Upstream every time", "#ef4444", upstream_total, f"~{upstream_total} ms"),
-        ("toolcall-cache", "#10b981", cache_total, f"~{cache_total} ms"),
+        ("Upstream every time", "#ef4444", upstream_total, f"~{round(upstream_total)} ms"),
+        ("toolcall-cache", "#10b981", cache_total, f"~{round(cache_total)} ms"),
     ]
 
     bar_h = 48
@@ -84,11 +116,13 @@ def latency_svg() -> str:
         labels.append(f'<text x="{x + w/2}" y="{margin_top + bar_h/2 + 5}" text-anchor="middle" font-size="14" font-weight="600" fill="white">{desc}</text>')
         x += max(w, 160) + gap
 
+    speedup = upstream_total / cache_total if cache_total else 0
     svg = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">
   <rect width="100%" height="100%" fill="#f8fafc"/>
-  <text x="{width/2}" y="36" text-anchor="middle" font-size="18" font-weight="700" fill="#0f172a">Latency: 10 repeated deterministic tool calls</text>
+  <text x="{width/2}" y="36" text-anchor="middle" font-size="18" font-weight="700" fill="#0f172a">Latency: {repeated} repeated deterministic tool calls</text>
   {''.join(rects)}
   {''.join(labels)}
+  <text x="{width/2}" y="{y_base + 8}" text-anchor="middle" font-size="12" fill="#64748b">cache hit measured (~{round(cache_per_call_ms, 2)} ms/call); upstream = typical network tool (~{round(upstream_per_call_ms)} ms) — ~{round(speedup)}x fewer ms</text>
 </svg>'''
     return svg.strip()
 

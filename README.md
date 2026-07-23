@@ -279,6 +279,30 @@ It spawns a fake MCP server with a cacheable `read_file` and a non-cacheable `no
 
 - The second `read_file` call hits the cache (upstream counter stays at 1).
 - Every `now` call reaches upstream (counter increments).
+- A cached entry returns a hit before its TTL expires and a miss after
+  (checked via the cache module's injectable `now`, so no real sleeping).
+
+### Benchmarks
+
+```bash
+python benchmarks/bench_latency.py
+```
+
+Measures two things and writes `benchmarks/results.json`:
+
+- **micro** — pure `cache.get` (hit) and `cache.put` SQLite latency in µs.
+- **e2e** — N repeated `read_file` calls through the stdio proxy (cached after
+  the first) vs N `now` calls (never cached, always forwarded to the upstream
+  subprocess), in ms/call. A real cached-vs-uncached comparison through the
+  actual proxy.
+
+`docs/diagrams/generate.py` reads `results.json` to render `latency.svg` from
+the measured cache-hit latency (falling back to an illustrative sub-millisecond
+default before the benchmark has been run). The upstream bar is a *typical*
+network-tool round-trip, not measured — a real upstream's cost varies by tool,
+so the README and the chart caption label it as typical. Re-run the benchmark
+and then `python docs/diagrams/generate.py` to refresh the chart with new
+numbers.
 
 Regenerate README diagrams:
 
@@ -302,8 +326,9 @@ toolcall-cache/
 │   └── transports/
 │       ├── stdio.py       # Stdio MCP proxy
 │       └── http.py        # HTTP MCP reverse proxy
-├── selfcheck.py           # End-to-end test
-├── docs/diagrams/         # Generated SVGs
+├── selfcheck.py           # End-to-end test (+ TTL expiry unit check)
+├── benchmarks/            # bench_latency.py + measured results.json
+├── docs/diagrams/         # Generated SVGs (read benchmarks/results.json)
 ├── pyproject.toml
 ├── LICENSE
 └── README.md

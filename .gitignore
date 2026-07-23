@@ -41,3 +41,9 @@ Thumbs.db
 *.db
 *.db-journal
 .toolcall-cache/
+
+# agent scratch / tooling (do not commit)
+.claude/
+.superpowers/
+PROMPT.md
+PLAN.md
