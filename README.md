@@ -26,9 +26,9 @@ Long agent sessions repeat the same tool calls over and over:
 - Re-grepping the same symbol across a codebase.
 - Re-fetching the same HTTP endpoint for context.
 
-Each call costs time, tokens, and (for paid MCP servers or API-backed tools) money. There is no framework-agnostic cache layer that works across Claude Code, Codex, Cursor, or any other MCP client.
+Each call costs time, tokens, and (for paid MCP servers or API-backed tools) money.
 
-`toolcall-cache` is that missing layer.
+`toolcall-cache` is a framework-agnostic cache layer that works across Claude Code, Codex, Cursor, or any other MCP client — see [How this compares](#how-this-compares) for what specifically sets it apart from the other MCP caching proxies out there.
 
 ![Cache impact](docs/diagrams/cache-impact.svg)
 
@@ -67,6 +67,18 @@ sequenceDiagram
 ```
 
 ![Latency comparison](docs/diagrams/latency.svg)
+
+---
+
+## How this compares
+
+MCP caching proxies are a crowded and growing category. The closest projects:
+
+- [swapnilsurdi/mcp-cache](https://github.com/swapnilsurdi/mcp-cache) — a stdio-only proxy that caches responses over 900KB by unique ID with a 1-hour TTL. No content-addressed key and no allow/deny policy.
+- [cmaurer/mcp-cache](https://github.com/cmaurer/mcp-cache) — owns the `mcp-cache` name on PyPI, but it's a library MCP servers import internally, not a transparent proxy you drop in front of one.
+- [kira-autonoma/mcp-context-proxy](https://github.com/kira-autonoma/mcp-context-proxy) — caches schema lazy-loading, a different problem from caching tool-call results.
+
+`toolcall-cache` differs on four specifics: cache keys are `sha256(canonical_json({server_id, tool, args}))` — content-addressed, not size- or ID-based; the policy is default-safe, with a denylist that always vetoes the allowlist; it speaks both stdio and HTTP transports, not just one; and it ships `invalidate` / `list` / `stats` CLI commands alongside TTL expiry.
 
 ---
 
