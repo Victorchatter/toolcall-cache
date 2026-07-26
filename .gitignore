@@ -47,3 +47,13 @@ Thumbs.db
 .superpowers/
 PROMPT.md
 PLAN.md
+
+# engramkit init writes per-vendor agent config into every repo it touches.
+# Machine-local tooling, not project config — and a committed .claude/settings.json
+# runs a SessionStart hook on the machine of anyone who clones.
+.mcp.json
+.cursor/
+.gemini/
+.codex/
+.claude/settings.json
+.claude/settings.local.json
