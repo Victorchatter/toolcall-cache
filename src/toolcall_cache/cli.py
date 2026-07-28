@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
 from pathlib import Path
 
-from . import cache, policy, server
+from . import cache, key, policy, server
 
 DEFAULT_DB = os.path.expanduser("~/.toolcall-cache/toolcall-cache.db")
 DEFAULT_TTL = 3600
 DEFAULT_DENYLIST = ",".join(policy.DEFAULT_DENYLIST)
+DEFAULT_FUZZY_THRESHOLD = 0.85
+DEFAULT_FUZZY_WINDOW = 100
 
 
 def _default_db() -> str:
@@ -79,6 +82,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=8787,
         help="Port to bind for HTTP transport (default: 8787).",
     )
+    start_parser.add_argument(
+        "--fuzzy",
+        action="store_true",
+        help="Enable semantic/fuzzy cache matching after an exact-key miss.",
+    )
+    start_parser.add_argument(
+        "--fuzzy-ignore-keys",
+        default="",
+        help="Comma-separated argument keys to ignore during fuzzy normalization.",
+    )
+    start_parser.add_argument(
+        "--fuzzy-threshold",
+        type=float,
+        default=DEFAULT_FUZZY_THRESHOLD,
+        help=f"Minimum Levenshtein similarity for a fuzzy hit (default: {DEFAULT_FUZZY_THRESHOLD}).",
+    )
+    start_parser.add_argument(
+        "--fuzzy-window",
+        type=int,
+        default=DEFAULT_FUZZY_WINDOW,
+        help=f"Maximum recent entries to scan for a fuzzy match (default: {DEFAULT_FUZZY_WINDOW}).",
+    )
 
     sub.add_parser("clear", help="Delete all cached entries.", parents=[common])
 
@@ -100,6 +125,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-clear",
         action="store_true",
         help="Do not clear the screen between watch updates (for CI/logging).",
+    )
+
+    fuzzy_test_parser = sub.add_parser(
+        "fuzzy-test",
+        help="Preview whether two argument sets would fuzzy-match.",
+    )
+    fuzzy_test_parser.add_argument(
+        "tool",
+        help="Tool name to compare.",
+    )
+    fuzzy_test_parser.add_argument(
+        "args_a",
+        help="First JSON object containing tool arguments.",
+    )
+    fuzzy_test_parser.add_argument(
+        "args_b",
+        help="Second JSON object containing tool arguments.",
+    )
+    fuzzy_test_parser.add_argument(
+        "--fuzzy-ignore-keys",
+        default="",
+        help="Comma-separated argument keys to ignore during fuzzy normalization.",
+    )
+    fuzzy_test_parser.add_argument(
+        "--fuzzy-threshold",
+        type=float,
+        default=DEFAULT_FUZZY_THRESHOLD,
+        help=f"Minimum Levenshtein similarity for a fuzzy match (default: {DEFAULT_FUZZY_THRESHOLD}).",
     )
 
     return parser
@@ -205,6 +258,41 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fuzzy_test(args: argparse.Namespace) -> int:
+    """Preview whether two argument sets would fuzzy-match.
+
+    Normalizes both argument objects using the same rules as the proxy,
+    computes the Levenshtein similarity of their canonical JSON strings,
+    and reports whether the similarity meets the configured threshold.
+
+    Exit codes:
+      0 - the two argument sets fuzzy-match (similarity >= threshold).
+      1 - they do not reach the threshold.
+      2 - invalid arguments or JSON parse error.
+    """
+    try:
+        args_a = json.loads(args.args_a)
+        args_b = json.loads(args.args_b)
+    except json.JSONDecodeError as exc:
+        print(f"error: invalid JSON argument: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(args_a, dict) or not isinstance(args_b, dict):
+        print("error: both argument sets must be JSON objects", file=sys.stderr)
+        return 2
+
+    ignore_keys = frozenset(args.fuzzy_ignore_keys)
+    json_a = key.make_normalized_json(args_a, ignore_keys)
+    json_b = key.make_normalized_json(args_b, ignore_keys)
+    score = key.levenshtein_ratio(json_a, json_b)
+    match = score >= args.fuzzy_threshold
+
+    print(f"tool: {args.tool}")
+    print(f"threshold: {args.fuzzy_threshold}")
+    print(f"similarity: {score:.2f}")
+    print(f"match: {'yes' if match else 'no'}")
+    return 0 if match else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -212,9 +300,11 @@ def main(argv: list[str] | None = None) -> int:
     # Normalize allowlist/denylist into lists when present (start command).
     args.allowlist = _parse_name_list(getattr(args, "allowlist", ""))
     args.denylist = _parse_name_list(getattr(args, "denylist", ""))
+    args.fuzzy_ignore_keys = _parse_name_list(getattr(args, "fuzzy_ignore_keys", ""))
 
-    # Ensure cache directory exists for management commands too.
-    Path(args.db).parent.mkdir(parents=True, exist_ok=True)
+    # Ensure cache directory exists for commands that touch the database.
+    if hasattr(args, "db"):
+        Path(args.db).parent.mkdir(parents=True, exist_ok=True)
 
     if args.command == "start":
         return server.start(args)
@@ -226,6 +316,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list(args)
     if args.command == "stats":
         return cmd_stats(args)
+    if args.command == "fuzzy-test":
+        return cmd_fuzzy_test(args)
 
     parser.print_help()
     return 2

@@ -102,6 +102,30 @@ sha256(canonical_json({server_id, tool_name, arguments}))
 
 The `server_id` prevents collisions between tools with the same name on different upstream servers.
 
+### Fuzzy / semantic cache
+
+Enable fuzzy mode with `--fuzzy` to treat small argument variations as cache hits. The proxy still tries an exact key lookup first; only on an exact miss does it scan the most recent entries for the same tool and pick the closest normalized match above `--fuzzy-threshold`.
+
+Normalization rules:
+
+- String values are stripped of surrounding whitespace and lowercased.
+- Dict keys are sorted recursively so key order does not matter.
+- Keys listed in `--fuzzy-ignore-keys` are dropped at every dict level.
+- Numbers, booleans, lists, and `null` are left unchanged.
+
+A fuzzy hit is returned with a marker so clients can tell the difference:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "content": [...],
+    "_meta": {"locallab_fuzzy_match": true}
+  }
+}
+```
+
 ---
 
 ## Methodology: what to use it for
@@ -198,6 +222,13 @@ toolcall-cache invalidate read_file
 
 # Clear everything
 toolcall-cache clear
+
+# Preview whether two argument sets would fuzzy-match
+toolcall-cache fuzzy-test grep '{"pattern":"TODO","path":"src"}' '{"pattern":"todo","path":"src"}'
+# tool: grep
+# threshold: 0.85
+# similarity: 1.00
+# match: yes
 ```
 
 ---
@@ -276,6 +307,7 @@ toolcall-cache start --help
 | `list` | Show cached entries. |
 | `stats` | Show aggregate hits, misses, hit rate, entries, expiring entries, and per-tool stats. |
 | `stats --watch [SECONDS]` | Poll and refresh the stats table live (default 2s). |
+| `fuzzy-test <tool> <args-a> <args-b>` | Preview whether two argument sets would fuzzy-match. |
 
 Common options:
 
@@ -286,6 +318,10 @@ Common options:
 | `--denylist` | `*_write*,send*,delete*,random*,time*,now*,date*` | Glob patterns never cached. |
 | `--ttl` | `3600` | Cache TTL in seconds. |
 | `--server-id` | `default` | Server identity in cache keys. |
+| `--fuzzy` | off | Enable fuzzy matching after an exact-key miss. |
+| `--fuzzy-ignore-keys` | *(empty)* | Argument keys to drop recursively before fuzzy comparison. |
+| `--fuzzy-threshold` | `0.85` | Minimum Levenshtein similarity for a fuzzy hit. |
+| `--fuzzy-window` | `100` | Maximum recent entries scanned per fuzzy lookup. |
 
 ---
 
@@ -303,6 +339,8 @@ It spawns a fake MCP server with a cacheable `read_file` and a non-cacheable `no
 - Every `now` call reaches upstream (counter increments).
 - A cached entry returns a hit before its TTL expires and a miss after
   (checked via the cache module's injectable `now`, so no real sleeping).
+- Fuzzy mode matches calls that differ only by whitespace/case or by an ignored key.
+- The `fuzzy-test` CLI previews whether two argument sets would fuzzy-match.
 
 ### Benchmarks
 

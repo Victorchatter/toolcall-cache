@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .key import canonical_json
+from .key import canonical_json, levenshtein_ratio, make_normalized_json
 
 
 def init_db(path: str) -> sqlite3.Connection:
@@ -18,6 +18,7 @@ def init_db(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     _ensure_schema(conn)
+    _migrate_schema(conn)
     return conn
 
 
@@ -30,15 +31,32 @@ CREATE TABLE IF NOT EXISTS cache_entries (
     result_json TEXT NOT NULL,
     created_at REAL NOT NULL,
     expires_at REAL NOT NULL,
-    hit_count INTEGER NOT NULL DEFAULT 0
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    normalized_args TEXT NOT NULL DEFAULT '',
+    tool_signature TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_cache_tool ON cache_entries(tool_name);
 CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache_entries(expires_at);
+CREATE INDEX IF NOT EXISTS idx_cache_server_tool_created ON cache_entries(server_id, tool_name, created_at);
 """
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    conn.commit()
+
+
+def _table_columns(conn: sqlite3.Connection) -> set[str]:
+    return {row[1] for row in conn.execute("PRAGMA table_info(cache_entries)")}
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the initial release."""
+    columns = _table_columns(conn)
+    if "normalized_args" not in columns:
+        conn.execute("ALTER TABLE cache_entries ADD COLUMN normalized_args TEXT NOT NULL DEFAULT ''")
+    if "tool_signature" not in columns:
+        conn.execute("ALTER TABLE cache_entries ADD COLUMN tool_signature TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 
@@ -66,6 +84,64 @@ def get(conn: sqlite3.Connection, key_hash: str, now: float | None = None) -> di
     }
 
 
+def fuzzy_lookup(
+    conn: sqlite3.Connection,
+    server_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    threshold: float,
+    window: int,
+    ignore_keys: set[str] | frozenset[str] | None = None,
+    now: float | None = None,
+) -> dict[str, Any] | None:
+    """Scan the last ``window`` entries for ``tool_name`` and return the best
+    fuzzy match above ``threshold``.
+
+    Similarity is computed with Levenshtein ratio over the canonical JSON of
+    normalized arguments.
+    """
+    now = now if now is not None else time.time()
+    window = max(1, int(window))
+    threshold = float(threshold)
+    target_json = make_normalized_json(arguments, ignore_keys)
+
+    rows = conn.execute(
+        """
+        SELECT key_hash, normalized_args, result_json, expires_at, hit_count
+        FROM cache_entries
+        WHERE server_id = ? AND tool_name = ? AND expires_at >= ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (server_id, tool_name, now, window),
+    ).fetchall()
+
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    for key_hash, normalized_args, result_json, expires_at, hit_count in rows:
+        if not normalized_args:
+            continue
+        score = levenshtein_ratio(target_json, normalized_args)
+        if score >= threshold and score > best_score:
+            best = {
+                "key_hash": key_hash,
+                "score": score,
+                "result": json.loads(result_json),
+                "expires_at": expires_at,
+                "hit_count": hit_count,
+            }
+            best_score = score
+
+    if best is not None:
+        conn.execute(
+            "UPDATE cache_entries SET hit_count = hit_count + 1 WHERE key_hash = ?",
+            (best["key_hash"],),
+        )
+        conn.commit()
+        best["hit_count"] = best["hit_count"] + 1
+    return best
+
+
 def put(
     conn: sqlite3.Connection,
     key_hash: str,
@@ -74,20 +150,31 @@ def put(
     args_hash: str,
     result: dict[str, Any],
     ttl: float,
+    normalized_args_json: str | None = None,
+    tool_signature: str | None = None,
     now: float | None = None,
 ) -> None:
     """Store a result in the cache with a TTL in seconds."""
     now = now if now is not None else time.time()
     expires_at = now + ttl
+    if normalized_args_json is None:
+        normalized_args_json = ""
+    if tool_signature is None:
+        tool_signature = tool_name
     conn.execute(
         """
-        INSERT INTO cache_entries (key_hash, server_id, tool_name, args_hash, result_json, created_at, expires_at, hit_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+        INSERT INTO cache_entries (
+            key_hash, server_id, tool_name, args_hash, result_json,
+            created_at, expires_at, hit_count, normalized_args, tool_signature
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
         ON CONFLICT(key_hash) DO UPDATE SET
             result_json = excluded.result_json,
             created_at = excluded.created_at,
             expires_at = excluded.expires_at,
-            hit_count = 0
+            hit_count = 0,
+            normalized_args = excluded.normalized_args,
+            tool_signature = excluded.tool_signature
         """,
         (
             key_hash,
@@ -97,6 +184,8 @@ def put(
             canonical_json(result),
             now,
             expires_at,
+            normalized_args_json,
+            tool_signature,
         ),
     )
     conn.commit()

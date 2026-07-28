@@ -23,12 +23,14 @@ class StdioTransport:
         allowlist: list[str],
         denylist: list[str],
         ttl: float,
+        fuzzy_config: proxy.FuzzyConfig | None = None,
     ) -> None:
         self.upstream_command = upstream_command
         self.server_id = server_id
         self.allowlist = allowlist
         self.denylist = denylist
         self.ttl = ttl
+        self.fuzzy_config = fuzzy_config or proxy.FuzzyConfig()
         self.conn = cache.init_db(db_path)
         self.annotations: dict[str, dict] = {}
         # Pending forwarded tools/call requests: id -> (tool_name, arguments)
@@ -121,6 +123,7 @@ class StdioTransport:
                     self.annotations,
                     self.allowlist,
                     self.denylist,
+                    fuzzy_config=self.fuzzy_config,
                 )
                 if cached is not None:
                     await self.stdout_queue.put(cached)
@@ -153,6 +156,7 @@ class StdioTransport:
                     self.allowlist,
                     self.denylist,
                     self.ttl,
+                    fuzzy_config=self.fuzzy_config,
                 )
 
             if proxy.is_tools_list_response(msg):
@@ -199,6 +203,7 @@ def run_stdio_proxy(
     allowlist: list[str],
     denylist: list[str],
     ttl: float,
+    fuzzy_config: proxy.FuzzyConfig | None = None,
 ) -> None:
     """Parse the upstream command and run the stdio proxy until stdin closes."""
     # Windows paths contain backslashes; shlex.split(posix=True) strips them.
@@ -208,5 +213,5 @@ def run_stdio_proxy(
         cmd = shlex.split(upstream_command, posix=False)
     else:
         cmd = shlex.split(upstream_command)
-    transport = StdioTransport(cmd, db_path, server_id, allowlist, denylist, ttl)
+    transport = StdioTransport(cmd, db_path, server_id, allowlist, denylist, ttl, fuzzy_config=fuzzy_config)
     asyncio.run(transport.run())

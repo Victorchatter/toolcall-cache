@@ -36,12 +36,14 @@ class HttpProxyState:
         allowlist: list[str],
         denylist: list[str],
         ttl: float,
+        fuzzy_config: proxy.FuzzyConfig | None = None,
     ) -> None:
         self.upstream_base_url = upstream_base_url.rstrip("/")
         self.server_id = server_id
         self.allowlist = allowlist
         self.denylist = denylist
         self.ttl = ttl
+        self.fuzzy_config = fuzzy_config or proxy.FuzzyConfig()
         self.conn = cache.init_db(db_path)
         self.annotations: dict[str, dict] = {}
         self.pending_calls: dict[Any, tuple[str, dict[str, Any]]] = {}
@@ -113,6 +115,7 @@ class HttpProxyHandler(BaseHTTPRequestHandler):
                         self.state.annotations,
                         self.state.allowlist,
                         self.state.denylist,
+                        fuzzy_config=self.state.fuzzy_config,
                     )
                 if cached is not None:
                     self._send_json(200, cached)
@@ -178,6 +181,7 @@ class HttpProxyHandler(BaseHTTPRequestHandler):
                 self.state.allowlist,
                 self.state.denylist,
                 self.state.ttl,
+                fuzzy_config=self.state.fuzzy_config,
             )
 
     def _maybe_extract_annotations(self, response_body: bytes) -> None:
@@ -244,9 +248,18 @@ def run_http_proxy(
     allowlist: list[str],
     denylist: list[str],
     ttl: float,
+    fuzzy_config: proxy.FuzzyConfig | None = None,
 ) -> None:
     """Run the HTTP reverse proxy until interrupted."""
-    state = HttpProxyState(upstream_base_url, db_path, server_id, allowlist, denylist, ttl)
+    state = HttpProxyState(
+        upstream_base_url,
+        db_path,
+        server_id,
+        allowlist,
+        denylist,
+        ttl,
+        fuzzy_config=fuzzy_config,
+    )
     handler = make_http_handler(state)
     server = ThreadingHTTPServer((host, port), handler)
     try:

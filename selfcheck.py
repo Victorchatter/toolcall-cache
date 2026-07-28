@@ -3,6 +3,8 @@
 Runs a fake MCP server behind the stdio proxy and asserts:
 - repeated ``read_file`` calls hit the cache (upstream counter stays at 1)
 - repeated ``now`` calls always pass through (counter increments)
+- fuzzy mode matches semantically similar tool arguments
+- the ``fuzzy-test`` CLI finds cached fuzzy matches
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ FAKE_SERVER = textwrap.dedent(
     import json
     import sys
 
-    counts = {"read_file": 0, "now": 0}
+    counts = {"read_file": 0, "search": 0, "lookup": 0, "now": 0}
 
     def handle(msg):
         method = msg.get("method")
@@ -49,6 +51,18 @@ FAKE_SERVER = textwrap.dedent(
                             "annotations": {"cacheable": True},
                         },
                         {
+                            "name": "search",
+                            "description": "Searches for a pattern.",
+                            "inputSchema": {"type": "object", "properties": {"pattern": {"type": "string"}}},
+                            "annotations": {"cacheable": True},
+                        },
+                        {
+                            "name": "lookup",
+                            "description": "Looks up a key.",
+                            "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}}},
+                            "annotations": {"cacheable": True},
+                        },
+                        {
                             "name": "now",
                             "description": "Returns the current counter.",
                             "inputSchema": {"type": "object"},
@@ -67,6 +81,20 @@ FAKE_SERVER = textwrap.dedent(
                     "jsonrpc": "2.0",
                     "id": msg.get("id"),
                     "result": {"content": [{"type": "text", "text": text}]},
+                }
+            if name == "search":
+                counts["search"] += 1
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg.get("id"),
+                    "result": {"content": [{"type": "text", "text": "constant search results"}]},
+                }
+            if name == "lookup":
+                counts["lookup"] += 1
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg.get("id"),
+                    "result": {"content": [{"type": "text", "text": "constant lookup results"}]},
                 }
             if name == "now":
                 counts["now"] += 1
@@ -144,8 +172,26 @@ def test_ttl():
                 pass
 
 
+def test_fuzzy_key_utils():
+    """Quick unit check for normalization and Levenshtein ratio."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+    sys.path.insert(0, src_path)
+    from toolcall_cache.key import levenshtein_ratio, normalize_args  # noqa: E402
+
+    normalized = normalize_args({"path": "  /TMP/FOO.TXT  "}, ignore_keys=set())
+    _assert(normalized == {"path": "/tmp/foo.txt"}, f"unexpected normalized args: {normalized}")
+
+    ignored = normalize_args({"path": "/tmp/a", "session_id": "1"}, ignore_keys={"session_id"})
+    _assert("session_id" not in ignored, "ignored key should be removed")
+    _assert(ignored == {"path": "/tmp/a"}, f"unexpected ignored-key result: {ignored}")
+
+    ratio = levenshtein_ratio("todo", "todos")
+    _assert(ratio > 0.85, f"expected ratio > 0.85, got {ratio}")
+
+
 def main():
     test_ttl()
+    test_fuzzy_key_utils()
 
     project_root = os.path.dirname(os.path.abspath(__file__))
     src_path = os.path.join(project_root, "src")
@@ -178,9 +224,12 @@ def main():
             "--db",
             db_path,
             "--allowlist",
-            "read_file",
+            "read_file,search,lookup",
             "--ttl",
             "60",
+            "--fuzzy",
+            "--fuzzy-ignore-keys",
+            "session_id",
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -216,7 +265,7 @@ def main():
             f"unexpected read_file response: {r1}",
         )
 
-        # Second read_file call with identical args should be cached.
+        # Second read_file call with identical args should be cached (exact hit).
         _send(
             proxy,
             {
@@ -232,19 +281,126 @@ def main():
             f"unexpected cached read_file response: {r2}",
         )
 
+        # Normalization: whitespace and case variation maps to the same normalized key.
+        _send(
+            proxy,
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "read_file", "arguments": {"path": "  /var/lib/unique-FILE.txt  "}},
+            },
+        )
+        r3 = _recv(proxy)
+        _assert(
+            r3["result"]["content"][0]["type"] == "text",
+            f"unexpected normalized read_file response: {r3}",
+        )
+        # A repeat with a different whitespace/case variant should exact-hit the normalized key.
+        _send(
+            proxy,
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "read_file", "arguments": {"path": "  /VAR/LIB/unique-file.TXT  "}},
+            },
+        )
+        r4 = _recv(proxy)
+        _assert(
+            r4["result"]["content"][0]["text"] == r3["result"]["content"][0]["text"],
+            f"repeat normalized read_file should match first response: {r4}",
+        )
+        _assert(
+            r4["result"].get("_meta") is None,
+            f"exact normalized hit should not set _meta: {r4}",
+        )
+
+        # Semantic fuzzy hit through the fuzzy lookup path (not just normalized exact key).
+        _send(
+            proxy,
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {"name": "search", "arguments": {"pattern": "todo"}},
+            },
+        )
+        s1 = _recv(proxy)
+        _assert(
+            s1["result"]["content"][0]["text"] == "constant search results",
+            f"unexpected search response: {s1}",
+        )
+
+        _send(
+            proxy,
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "tools/call",
+                "params": {"name": "search", "arguments": {"pattern": "todos"}},
+            },
+        )
+        s2 = _recv(proxy)
+        _assert(
+            s2["result"]["content"][0]["text"] == "constant search results",
+            f"unexpected fuzzy search response: {s2}",
+        )
+        _assert(
+            s2["result"].get("_meta", {}).get("locallab_fuzzy_match") is True,
+            f"fuzzy hit should set _meta.locallab_fuzzy_match: {s2}",
+        )
+
+        # Fuzzy hit with ignored key: session_id is dropped, then fuzzy lookup bridges
+        # the small pattern variation.
+        _send(
+            proxy,
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": {
+                    "name": "lookup",
+                    "arguments": {"key": "token", "session_id": "abc"},
+                },
+            },
+        )
+        s3 = _recv(proxy)
+        _assert(
+            s3["result"]["content"][0]["text"] == "constant lookup results",
+            f"unexpected lookup response with ignored key: {s3}",
+        )
+
+        _send(
+            proxy,
+            {
+                "jsonrpc": "2.0",
+                "id": 10,
+                "method": "tools/call",
+                "params": {
+                    "name": "lookup",
+                    "arguments": {"key": "tokens", "session_id": "xyz"},
+                },
+            },
+        )
+        s4 = _recv(proxy)
+        _assert(
+            s4["result"]["content"][0]["text"] == "constant lookup results",
+            f"unexpected fuzzy lookup response with ignored key: {s4}",
+        )
+        _assert(
+            s4["result"].get("_meta", {}).get("locallab_fuzzy_match") is True,
+            f"fuzzy hit with ignored key should set _meta.locallab_fuzzy_match: {s4}",
+        )
+
         # now() is not cacheable, so each call must increment the upstream counter.
-        _send(proxy, {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "now"}})
+        _send(proxy, {"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "now"}})
         n1 = _recv(proxy)
         _assert(n1["result"]["content"][0]["text"] == "1", f"unexpected now response: {n1}")
 
-        _send(proxy, {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "now"}})
+        _send(proxy, {"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "now"}})
         n2 = _recv(proxy)
         _assert(n2["result"]["content"][0]["text"] == "2", f"unexpected now response: {n2}")
-
-        # Verify the cache actually has an entry.
-        _send(proxy, {"jsonrpc": "2.0", "id": 6, "method": "tools/list"})
-        tools2 = _recv(proxy)
-        _assert(tools2.get("id") == 6, f"unexpected second tools/list response: {tools2}")
 
         # Verify stats reports at least one hit.
         stats_result = subprocess.run(
@@ -261,9 +417,35 @@ def main():
         hit_count = int(hit_line.split()[-1])
         _assert(hit_count >= 1, f"expected hits >= 1, got {hit_count}")
 
+        # fuzzy-test CLI should report that two semantically close argument sets match.
+        fuzzy_test_result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "toolcall_cache",
+                "fuzzy-test",
+                "search",
+                '{"pattern":"todo"}',
+                '{"pattern":"todos"}',
+                "--fuzzy-threshold",
+                "0.85",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        _assert(
+            fuzzy_test_result.returncode == 0,
+            f"fuzzy-test exited {fuzzy_test_result.returncode}: {fuzzy_test_result.stderr}",
+        )
+        _assert(
+            "match: yes" in fuzzy_test_result.stdout,
+            f"fuzzy-test should report match: yes: {fuzzy_test_result.stdout}",
+        )
+
         # Ask the fake server directly for its counters (bypassing proxy via a side channel is
         # impossible, so we rely on the now responses above as the ground-truth counter).
-        _send(proxy, {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "now"}})
+        _send(proxy, {"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "now"}})
         n3 = _recv(proxy)
         _assert(
             n3["result"]["content"][0]["text"] == "3",

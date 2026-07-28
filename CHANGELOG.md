@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+- Semantic / fuzzy cache mode (`--fuzzy`).
+  - `--fuzzy-ignore-keys` drops specified argument keys recursively before
+    comparison and key hashing.
+  - `--fuzzy-threshold` sets the minimum Levenshtein similarity (default
+    `0.85`) for a fuzzy hit.
+  - `--fuzzy-window` limits the scan to the last N entries for the same tool
+    (default `100`).
+  - Normalization rules: string values are stripped and lowercased; dict keys
+    are sorted recursively; ignored keys are omitted.
+  - Exact-key lookup is tried first; fuzzy lookup is only used on an exact miss.
+  - Fuzzy hits inject `"_meta": {"locallab_fuzzy_match": true}` into the
+    JSON-RPC response.
+- `toolcall-cache fuzzy-test` CLI subcommand for quick offline validation of
+  fuzzy matching behavior and exit codes.
+- Schema migration adds `normalized_args` and `tool_signature` columns to the
+  SQLite `cache_entries` table.
+
 ## 0.2.0
 
 ### Added
