@@ -150,14 +150,23 @@ def stats(conn: sqlite3.Connection) -> dict[str, Any]:
     expired_entries = conn.execute(
         "SELECT COUNT(*) FROM cache_entries WHERE expires_at < ?", (now,)
     ).fetchone()[0]
+    expiring_soon = conn.execute(
+        "SELECT COUNT(*) FROM cache_entries WHERE expires_at >= ? AND expires_at <= ?",
+        (now, now + 300),
+    ).fetchone()[0]
     total_hits = conn.execute("SELECT COALESCE(SUM(hit_count), 0) FROM cache_entries").fetchone()[0]
     tool_rows = conn.execute(
-        "SELECT tool_name, COUNT(*), SUM(hit_count) FROM cache_entries GROUP BY tool_name"
+        "SELECT tool_name, COUNT(*), SUM(hit_count) FROM cache_entries GROUP BY tool_name ORDER BY SUM(hit_count) DESC"
     ).fetchall()
+    total_misses = total_entries  # every entry was a miss before it was cached
+    hit_rate = (total_hits / (total_hits + total_misses) * 100.0) if (total_hits + total_misses) else 0.0
     return {
         "total_entries": total_entries,
         "expired_entries": expired_entries,
+        "expiring_soon": expiring_soon,
         "total_hits": total_hits,
+        "total_misses": total_misses,
+        "hit_rate": hit_rate,
         "tools": [
             {"tool_name": row[0], "entries": row[1], "hits": row[2] or 0}
             for row in tool_rows

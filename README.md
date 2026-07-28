@@ -181,6 +181,15 @@ Your agent connects to `http://localhost:8787`; the proxy forwards to `http://lo
 # Show cache statistics
 toolcall-cache stats
 
+# Live updating stats table (refreshes every 2 seconds)
+toolcall-cache stats --watch
+
+# Live updating stats with a custom interval
+toolcall-cache stats --watch 5
+
+# Watch mode without clearing the screen, for CI/logging
+toolcall-cache stats --watch --no-clear
+
 # List cached entries
 toolcall-cache list
 
@@ -265,7 +274,8 @@ toolcall-cache start --help
 | `clear` | Delete every cached entry. |
 | `invalidate <tool>` | Delete entries for a single tool name. |
 | `list` | Show cached entries. |
-| `stats` | Show aggregate hits, entries, and per-tool stats. |
+| `stats` | Show aggregate hits, misses, hit rate, entries, expiring entries, and per-tool stats. |
+| `stats --watch [SECONDS]` | Poll and refresh the stats table live (default 2s). |
 
 Common options:
 

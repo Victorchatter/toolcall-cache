@@ -246,6 +246,21 @@ def main():
         tools2 = _recv(proxy)
         _assert(tools2.get("id") == 6, f"unexpected second tools/list response: {tools2}")
 
+        # Verify stats reports at least one hit.
+        stats_result = subprocess.run(
+            [sys.executable, "-m", "toolcall_cache", "stats", "--db", db_path],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        _assert(stats_result.returncode == 0, f"stats exited {stats_result.returncode}: {stats_result.stderr}")
+        stats_lower = stats_result.stdout.lower()
+        _assert("hits" in stats_lower, "stats output must mention hits")
+        hit_line = next((l for l in stats_result.stdout.splitlines() if l.strip().lower().startswith("hits")), None)
+        _assert(hit_line is not None, "stats output missing Hits line")
+        hit_count = int(hit_line.split()[-1])
+        _assert(hit_count >= 1, f"expected hits >= 1, got {hit_count}")
+
         # Ask the fake server directly for its counters (bypassing proxy via a side channel is
         # impossible, so we rely on the now responses above as the ground-truth counter).
         _send(proxy, {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "now"}})

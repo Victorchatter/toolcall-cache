@@ -86,7 +86,21 @@ def build_parser() -> argparse.ArgumentParser:
     invalidate_parser.add_argument("tool", help="Tool name to invalidate.")
 
     sub.add_parser("list", help="List cached entries.", parents=[common])
-    sub.add_parser("stats", help="Show cache statistics.", parents=[common])
+
+    stats_parser = sub.add_parser("stats", help="Show cache statistics.", parents=[common])
+    stats_parser.add_argument(
+        "--watch",
+        nargs="?",
+        const=2,
+        type=float,
+        metavar="SECONDS",
+        help="Poll the cache and refresh the table every SECONDS seconds (default: 2).",
+    )
+    stats_parser.add_argument(
+        "--no-clear",
+        action="store_true",
+        help="Do not clear the screen between watch updates (for CI/logging).",
+    )
 
     return parser
 
@@ -139,20 +153,53 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _render_stats_table(s: dict) -> str:
+    lines = []
+    lines.append(f"Database: {s.get('db', '')}")
+    lines.append(f"{'metric':<22} {'value':>10}")
+    lines.append("-" * 34)
+    lines.append(f"{'Total entries':<22} {s['total_entries']:>10}")
+    lines.append(f"{'Hits':<22} {s['total_hits']:>10}")
+    lines.append(f"{'Misses':<22} {s['total_misses']:>10}")
+    lines.append(f"{'Hit rate %':<22} {s['hit_rate']:>9.1f}%")
+    lines.append(f"{'Expiring in 5 min':<22} {s['expiring_soon']:>10}")
+    lines.append(f"{'Expired entries':<22} {s['expired_entries']:>10}")
+    if s["tools"]:
+        lines.append("")
+        lines.append("Top 5 tools by hit count:")
+        lines.append(f"{'tool':<20} {'entries':>10} {'hits':>10}")
+        lines.append("-" * 42)
+        for t in s["tools"][:5]:
+            lines.append(f"{t['tool_name']:<20} {t['entries']:>10} {t['hits']:>10}")
+    return "\n".join(lines) + "\n"
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     conn = cache.init_db(args.db)
     try:
+        if args.watch:
+            interval = max(0.1, args.watch)
+            clear = not args.no_clear
+            try:
+                while True:
+                    s = cache.stats(conn)
+                    s["db"] = args.db
+                    if clear:
+                        sys.stdout.write("\033[2J\033[H")
+                    sys.stdout.write(_render_stats_table(s))
+                    sys.stdout.write(f"\nWatching every {interval:.1f}s. Press Ctrl+C to exit.\n")
+                    sys.stdout.flush()
+                    time.sleep(interval)
+            except KeyboardInterrupt:
+                if clear:
+                    sys.stdout.write("\033[2J\033[H")
+                sys.stdout.write("Stopped watching.\n")
+                sys.stdout.flush()
+                return 0
+
         s = cache.stats(conn)
-        print(f"Database: {args.db}")
-        print(f"Total entries: {s['total_entries']}")
-        print(f"Expired entries: {s['expired_entries']}")
-        print(f"Total cache hits: {s['total_hits']}")
-        if s["tools"]:
-            print("\nPer-tool:")
-            print(f"{'tool':<20} {'entries':>10} {'hits':>10}")
-            print("-" * 42)
-            for t in s["tools"]:
-                print(f"{t['tool_name']:<20} {t['entries']:>10} {t['hits']:>10}")
+        s["db"] = args.db
+        print(_render_stats_table(s), end="")
     finally:
         conn.close()
     return 0
