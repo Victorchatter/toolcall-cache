@@ -9,17 +9,36 @@ import sys
 import time
 from pathlib import Path
 
-from . import cache, key, policy, server
+from . import cache, hydrate, key, policy, server
 
-DEFAULT_DB = os.path.expanduser("~/.toolcall-cache/toolcall-cache.db")
+DEFAULT_STATE_DIR = os.path.expanduser("~/.locallab")
+DEFAULT_LEGACY_DB = os.path.expanduser("~/.toolcall-cache/toolcall-cache.db")
+DEFAULT_UNIFIED_DB = os.path.expanduser("~/.locallab/toolcall-cache/cache.db")
 DEFAULT_TTL = 3600
 DEFAULT_DENYLIST = ",".join(policy.DEFAULT_DENYLIST)
 DEFAULT_FUZZY_THRESHOLD = 0.85
 DEFAULT_FUZZY_WINDOW = 100
 
 
-def _default_db() -> str:
-    return DEFAULT_DB
+def _db_path(args: argparse.Namespace) -> str:
+    """Resolve the active SQLite cache database path.
+
+    Priority:
+      1. ``--db`` if explicitly provided.
+      2. ``~/.locallab/toolcall-cache/cache.db`` if the state dir exists or
+         can be created.
+      3. Legacy ``~/.toolcall-cache/toolcall-cache.db`` as a fallback.
+    """
+    if getattr(args, "db", None) is not None:
+        return args.db
+
+    state_dir = getattr(args, "state_dir", DEFAULT_STATE_DIR)
+    unified = os.path.join(state_dir, "toolcall-cache", "cache.db")
+    try:
+        Path(unified).parent.mkdir(parents=True, exist_ok=True)
+        return unified
+    except OSError:
+        return DEFAULT_LEGACY_DB
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,8 +51,20 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--db",
-        default=_default_db(),
-        help=f"Path to the SQLite cache database (default: {DEFAULT_DB}).",
+        default=None,
+        help="Path to the SQLite cache database (overrides --state-dir).",
+    )
+    common.add_argument(
+        "--state-dir",
+        dest="state_dir",
+        default=DEFAULT_STATE_DIR,
+        help="Directory for unified LocalLab state (default: ~/.locallab).",
+    )
+    common.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print active database path and other runtime details.",
     )
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -153,6 +184,53 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_FUZZY_THRESHOLD,
         help=f"Minimum Levenshtein similarity for a fuzzy match (default: {DEFAULT_FUZZY_THRESHOLD}).",
+    )
+
+    hydrate_parser = sub.add_parser(
+        "hydrate",
+        help="Pre-populate the cache from an agent-vcr tape.",
+        parents=[common],
+    )
+    hydrate_parser.add_argument(
+        "--tape",
+        required=True,
+        help="Path to an agent-vcr tape JSONL file.",
+    )
+    hydrate_parser.add_argument(
+        "--server-id",
+        default="default",
+        help="Server identity to use for cached entries (default: default).",
+    )
+    hydrate_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be cached without writing to the database.",
+    )
+    hydrate_parser.add_argument(
+        "--allowlist",
+        default="",
+        help="Comma-separated list of tool names to cache (default: all cacheable).",
+    )
+    hydrate_parser.add_argument(
+        "--denylist",
+        default=DEFAULT_DENYLIST,
+        help=f"Comma-separated glob patterns never to cache (default: {DEFAULT_DENYLIST}).",
+    )
+    hydrate_parser.add_argument(
+        "--ttl",
+        type=float,
+        default=DEFAULT_TTL,
+        help=f"Cache TTL in seconds (default: {DEFAULT_TTL}).",
+    )
+    hydrate_parser.add_argument(
+        "--fuzzy",
+        action="store_true",
+        help="Use fuzzy-normalized cache keys (default: exact).",
+    )
+    hydrate_parser.add_argument(
+        "--fuzzy-ignore-keys",
+        default="",
+        help="Comma-separated argument keys to ignore during fuzzy normalization.",
     )
 
     return parser
@@ -293,6 +371,36 @@ def cmd_fuzzy_test(args: argparse.Namespace) -> int:
     return 0 if match else 1
 
 
+def cmd_hydrate(args: argparse.Namespace) -> int:
+    """Pre-populate the cache from an agent-vcr tape."""
+    from .proxy import FuzzyConfig
+
+    fuzzy_config = FuzzyConfig(
+        enabled=args.fuzzy,
+        ignore_keys=args.fuzzy_ignore_keys,
+    )
+
+    conn = cache.init_db(args.db)
+    try:
+        cached, skipped = hydrate.hydrate(
+            conn,
+            args.tape,
+            server_id=args.server_id,
+            allowlist=args.allowlist,
+            denylist=args.denylist,
+            ttl=args.ttl,
+            fuzzy_config=fuzzy_config,
+            dry_run=args.dry_run,
+        )
+        if args.dry_run:
+            print(f"Dry-run: would cache {cached} entries, skip {skipped}")
+        else:
+            print(f"Cached {cached} tool result(s), skipped {skipped}")
+    finally:
+        conn.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -302,8 +410,11 @@ def main(argv: list[str] | None = None) -> int:
     args.denylist = _parse_name_list(getattr(args, "denylist", ""))
     args.fuzzy_ignore_keys = _parse_name_list(getattr(args, "fuzzy_ignore_keys", ""))
 
-    # Ensure cache directory exists for commands that touch the database.
+    # Resolve the active database path from --db / --state-dir / fallback.
     if hasattr(args, "db"):
+        args.db = _db_path(args)
+        if getattr(args, "verbose", False):
+            print(f"database path: {args.db}", file=sys.stderr)
         Path(args.db).parent.mkdir(parents=True, exist_ok=True)
 
     if args.command == "start":
@@ -318,6 +429,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_stats(args)
     if args.command == "fuzzy-test":
         return cmd_fuzzy_test(args)
+    if args.command == "hydrate":
+        return cmd_hydrate(args)
 
     parser.print_help()
     return 2

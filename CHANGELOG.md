@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+- Benchmark harness publishing.
+  - `benchmarks/bench_latency.py` writes standardized LocalLab benchmark JSON
+    to `benchmarks/results.json` and to `benchmarks/results/<date>-<tag>.json`
+    when `BENCHMARK_TAG` is set.
+  - Added `benchmarks/README.md` and `.github/workflows/benchmarks.yml`.
+- Unified LocalLab state directory (`~/.locallab`) with a new `--state-dir`
+  flag defaulting to `~/.locallab`.
+- Cache database layout: `~/.locallab/toolcall-cache/cache.db`.
+- Kept `--db` as an explicit override for backward compatibility.
+- Automatic fallback to the legacy `~/.toolcall-cache/toolcall-cache.db` path when
+  `~/.locallab` cannot be created.
+- `-v/--verbose` prints the active database path.
+- New `toolcall-cache hydrate --tape <tape.jsonl> [--dry-run]` subcommand.
+  - Parses an `agent-vcr` tape and pre-populates the cache with successful
+    `tools/call` results.
+  - Skips entries containing errors or marked non-cacheable by the same
+    allowlist/denylist policy used in live proxy mode.
+  - Uses the same hash-key logic as live proxy mode, including optional fuzzy
+    matching.
+
 ## 0.3.0
 
 ### Added

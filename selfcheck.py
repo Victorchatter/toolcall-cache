@@ -189,6 +189,168 @@ def test_fuzzy_key_utils():
     _assert(ratio > 0.85, f"expected ratio > 0.85, got {ratio}")
 
 
+def test_state_dir():
+    """The --state-dir flag is honored for unified LocalLab state."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+    fake_path = tempfile.mktemp(suffix="_fake_mcp.py")
+    state_dir = tempfile.mkdtemp()
+    expected_db = os.path.join(state_dir, "toolcall-cache", "cache.db")
+
+    with open(fake_path, "w", encoding="utf-8") as f:
+        f.write(FAKE_SERVER)
+
+    for ext in ("", "-journal", "-wal", "-shm"):
+        p = expected_db + ext
+        if os.path.exists(p):
+            os.remove(p)
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = src_path
+
+    proxy = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "toolcall_cache",
+            "start",
+            "--transport",
+            "stdio",
+            "--upstream",
+            f"{sys.executable} {fake_path}",
+            "--state-dir",
+            state_dir,
+            "--allowlist",
+            "read_file",
+            "--ttl",
+            "60",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+
+    try:
+        # Realistic MCP handshake.
+        _send(proxy, {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}})
+        init = _recv(proxy)
+        _assert(init.get("id") == 0, f"unexpected initialize response: {init}")
+
+        _send(proxy, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+        _send(proxy, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        tools = _recv(proxy)
+        _assert(tools.get("id") == 1, f"unexpected tools/list response: {tools}")
+
+        _send(
+            proxy,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "read_file", "arguments": {"path": "/tmp/foo.txt"}},
+            },
+        )
+        r1 = _recv(proxy)
+        _assert(
+            r1["result"]["content"][0]["text"] == "content of /tmp/foo.txt",
+            f"unexpected read_file response: {r1}",
+        )
+
+        _assert(os.path.exists(expected_db), f"expected db at {expected_db}")
+    finally:
+        try:
+            proxy.stdin.close()
+        except Exception:
+            pass
+        try:
+            proxy.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proxy.kill()
+            proxy.wait(timeout=2)
+        try:
+            os.remove(fake_path)
+        except Exception:
+            pass
+        for root, dirs, files in os.walk(state_dir, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+        try:
+            os.rmdir(state_dir)
+        except OSError:
+            pass
+
+
+def test_hydrate():
+    """Hydrating from a tape populates the cache with observed tool results."""
+    src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+    state_dir = tempfile.mkdtemp()
+    tape_path = os.path.join(state_dir, "tape.jsonl")
+
+    events = [
+        {"kind": "tool_call", "seq": 1, "server": "fs", "tool": "read_file",
+         "args": {"path": "/tmp/foo.txt"}},
+        {"kind": "tool_result", "seq": 1, "server": "fs", "tool": "read_file",
+         "args_hash": "h1",
+         "result": {"content": [{"type": "text", "text": "cached from tape"}]}},
+        {"kind": "tool_call", "seq": 2, "server": "fs", "tool": "now", "args": {}},
+        {"kind": "tool_result", "seq": 2, "server": "fs", "tool": "now",
+         "args_hash": "h2",
+         "result": {"content": [{"type": "text", "text": "1"}]}},
+    ]
+    with open(tape_path, "w", encoding="utf-8") as f:
+        for ev in events:
+            f.write(json.dumps(ev) + "\n")
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = src_path
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "toolcall_cache",
+            "hydrate",
+            "--state-dir",
+            state_dir,
+            "--tape",
+            tape_path,
+            "--server-id",
+            "fs",
+            "--allowlist",
+            "read_file",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    _assert(result.returncode == 0, f"hydrate failed: {result.stderr}")
+    _assert("Cached 1" in result.stdout, f"expected one cached entry: {result.stdout}")
+
+    # Verify the entry is actually in the database by listing it.
+    list_result = subprocess.run(
+        [sys.executable, "-m", "toolcall_cache", "list", "--state-dir", state_dir],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    _assert(list_result.returncode == 0, f"list failed: {list_result.stderr}")
+    _assert("read_file" in list_result.stdout, "expected read_file in cache list")
+
+    # Cleanup
+    for root, dirs, files in os.walk(state_dir, topdown=False):
+        for name in files:
+            os.remove(os.path.join(root, name))
+        for name in dirs:
+            os.rmdir(os.path.join(root, name))
+    try:
+        os.rmdir(state_dir)
+    except OSError:
+        pass
+
+
 def main():
     test_ttl()
     test_fuzzy_key_utils()
@@ -471,6 +633,9 @@ def main():
             p = db_path + ext
             if os.path.exists(p):
                 os.remove(p)
+
+    test_state_dir()
+    test_hydrate()
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,6 +34,52 @@ from toolcall_cache.key import make_args_hash, make_key  # noqa: E402
 N = 50  # end-to-end calls per path
 TTL = 3600
 REPEATED_CALLS = 10  # the chart frames "10 repeated calls"
+BENCH_DIR = Path(__file__).resolve().parent
+
+
+def _read_version() -> str:
+    pyproject = ROOT / "pyproject.toml"
+    for line in pyproject.read_text(encoding="utf-8").splitlines():
+        if line.startswith("version"):
+            return line.split("=")[-1].strip().strip('"')
+    return "0.0.0"
+
+
+def write_results(
+    hit_us: float,
+    put_us: float,
+    cached_call_ms: float,
+    uncached_call_ms: float,
+    speedup: float,
+) -> Path:
+    """Write standardized benchmark JSON to results.json and, when a
+    BENCHMARK_TAG environment variable is set, to results/<date>-<tag>.json.
+    """
+    payload = {
+        "tool": "toolcall-cache",
+        "version": _read_version(),
+        "date": date.today().isoformat(),
+        "results": [
+            {"name": "cache_hit_latency", "unit": "us", "value": round(hit_us, 2)},
+            {"name": "cache_put_latency", "unit": "us", "value": round(put_us, 2)},
+            {"name": "cached_call_latency", "unit": "ms", "value": round(cached_call_ms, 3)},
+            {"name": "uncached_call_latency", "unit": "ms", "value": round(uncached_call_ms, 3)},
+            {"name": "cache_speedup", "unit": "ratio", "value": round(speedup, 1)},
+            {"name": "repeated_calls", "unit": "count", "value": REPEATED_CALLS},
+            {"name": "ttl_seconds", "unit": "s", "value": TTL},
+        ],
+    }
+    latest = BENCH_DIR / "results.json"
+    latest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    tag = os.environ.get("BENCHMARK_TAG")
+    if tag:
+        results_dir = BENCH_DIR / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        tagged = results_dir / f"{payload['date']}-{tag}.json"
+        tagged.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return tagged
+    return latest
 
 
 def _cleanup_db(db_path: str) -> None:
@@ -154,8 +201,12 @@ def main() -> None:
         "uncached_call_ms": round(uncached_ms, 3),
         "speedup": round(speedup, 1),
     }
+    # Keep the old simple results.json for backward compatibility while also
+    # writing the standardized LocalLab benchmark format.
     out = Path(__file__).resolve().parent / "results.json"
     out.write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+    result_path = write_results(hit_us, put_us, cached_ms, uncached_ms, speedup)
 
     print("toolcall-cache latency benchmark")
     print("=" * 58)
@@ -166,6 +217,8 @@ def main() -> None:
     print(f"speedup (uncached / cached)        : {speedup:8.1f}x")
     print("=" * 58)
     print(f"wrote {out}")
+    print(f"wrote standardized results to {result_path}")
+    print(f"wrote standardized results to {result_path}")
 
 
 if __name__ == "__main__":

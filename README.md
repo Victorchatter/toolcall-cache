@@ -277,6 +277,19 @@ The default policy is **allowlist-first and denylist-vetoes**:
 
 This design makes the safe choice the default: a configuration mistake costs you a cache miss, never a stale or wrong answer.
 
+### Hydrating from a tape
+
+If you recorded an agent run with `agent-vcr`, you can seed the cache so a
+partial replay avoids live MCP calls:
+
+```bash
+toolcall-cache hydrate --tape run.jsonl --server-id fs
+```
+
+`hydrate` parses the tape and stores every successful `tools/call` result,
+obeying the same allowlist/denylist policy and hash-key logic as live proxy
+mode. Use `--dry-run` to preview what would be cached.
+
 ### MCP annotation example
 
 If your MCP server advertises:
@@ -308,12 +321,14 @@ toolcall-cache start --help
 | `stats` | Show aggregate hits, misses, hit rate, entries, expiring entries, and per-tool stats. |
 | `stats --watch [SECONDS]` | Poll and refresh the stats table live (default 2s). |
 | `fuzzy-test <tool> <args-a> <args-b>` | Preview whether two argument sets would fuzzy-match. |
+| `hydrate --tape <tape.jsonl>` | Pre-populate the cache from an `agent-vcr` tape. |
 
 Common options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--db` | `~/.toolcall-cache/toolcall-cache.db` | SQLite cache file. |
+| `--db` | *(resolved)* | SQLite cache file (overrides `--state-dir`). |
+| `--state-dir` | `~/.locallab` | Unified LocalLab state directory. |
 | `--allowlist` | *(empty)* | Comma-separated tool names to cache. |
 | `--denylist` | `*_write*,send*,delete*,random*,time*,now*,date*` | Glob patterns never cached. |
 | `--ttl` | `3600` | Cache TTL in seconds. |
@@ -322,6 +337,11 @@ Common options:
 | `--fuzzy-ignore-keys` | *(empty)* | Argument keys to drop recursively before fuzzy comparison. |
 | `--fuzzy-threshold` | `0.85` | Minimum Levenshtein similarity for a fuzzy hit. |
 | `--fuzzy-window` | `100` | Maximum recent entries scanned per fuzzy lookup. |
+
+By default `toolcall-cache` stores its SQLite database in the unified LocalLab
+state directory at `~/.locallab/toolcall-cache/cache.db`. If `~/.locallab` cannot
+be created, it falls back to the legacy path `~/.toolcall-cache/toolcall-cache.db`.
+Use `--db` to override either default with an explicit path.
 
 ---
 

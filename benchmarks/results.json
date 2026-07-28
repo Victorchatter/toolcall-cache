@@ -1,10 +1,42 @@
 {
-  "n": 50,
-  "ttl_s": 3600,
-  "repeated_calls": 10,
-  "cache_hit_us": 84.87,
-  "cache_put_us": 146.95,
-  "cached_call_ms": 0.778,
-  "uncached_call_ms": 0.912,
-  "speedup": 1.2
+  "tool": "toolcall-cache",
+  "version": "0.4.0",
+  "date": "2026-07-28",
+  "results": [
+    {
+      "name": "cache_hit_latency",
+      "unit": "us",
+      "value": 65.19
+    },
+    {
+      "name": "cache_put_latency",
+      "unit": "us",
+      "value": 140.75
+    },
+    {
+      "name": "cached_call_latency",
+      "unit": "ms",
+      "value": 0.523
+    },
+    {
+      "name": "uncached_call_latency",
+      "unit": "ms",
+      "value": 0.608
+    },
+    {
+      "name": "cache_speedup",
+      "unit": "ratio",
+      "value": 1.2
+    },
+    {
+      "name": "repeated_calls",
+      "unit": "count",
+      "value": 10
+    },
+    {
+      "name": "ttl_seconds",
+      "unit": "s",
+      "value": 3600
+    }
+  ]
 }
